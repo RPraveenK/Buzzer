@@ -4,6 +4,7 @@ import pandas as pd
 import time
 from datetime import datetime
 import pytz
+import hashlib
 
 # Set page configuration
 st.set_page_config(
@@ -22,10 +23,19 @@ if 'participants' not in st.session_state:
     st.session_state.participants = {}
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
+if 'admin_logged_in' not in st.session_state:
+    st.session_state.admin_logged_in = False
+if 'show_admin_login' not in st.session_state:
+    st.session_state.show_admin_login = False
 
-# Application title and description
-st.title("🔔 Quiz Buzzer System")
-st.markdown("A real-time buzzer system for quiz events")
+# Admin credentials (in a real app, use environment variables or a secure database)
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD_HASH = hashlib.sha256("quiz123".encode()).hexdigest()  # password: quiz123
+
+# Function to verify admin credentials
+def verify_admin(username, password):
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    return username == ADMIN_USERNAME and password_hash == ADMIN_PASSWORD_HASH
 
 # Function to press the buzzer
 def press_buzzer():
@@ -57,8 +67,8 @@ def reset_buzzer():
     st.session_state.buzzer_presses = pd.DataFrame(columns=['Name', 'ID', 'Timestamp', 'Time'])
     st.session_state.buzzer_active = True
 
-# Function to login
-def login():
+# Function to login participant
+def login_participant():
     name = st.session_state.name_input
     id_num = st.session_state.id_input
     
@@ -67,38 +77,77 @@ def login():
         st.session_state.current_user = id_num
         st.success(f"Welcome, {name}!")
 
-# Function to logout
-def logout():
+# Function to logout participant
+def logout_participant():
     st.session_state.current_user = None
+
+# Function to login admin
+def login_admin():
+    username = st.session_state.admin_username
+    password = st.session_state.admin_password
+    
+    if verify_admin(username, password):
+        st.session_state.admin_logged_in = True
+        st.session_state.show_admin_login = False
+        st.success("Admin login successful!")
+    else:
+        st.error("Invalid admin credentials")
+
+# Function to logout admin
+def logout_admin():
+    st.session_state.admin_logged_in = False
+
+# Function to toggle admin login form
+def toggle_admin_login():
+    st.session_state.show_admin_login = not st.session_state.show_admin_login
+
+# Application title and description
+st.title("🔔 Quiz Buzzer System")
+st.markdown("A real-time buzzer system for quiz events with secure admin access")
 
 # Sidebar for login and admin functions
 with st.sidebar:
     st.header("Participant Login")
     
     if st.session_state.current_user is None:
-        with st.form("login_form"):
+        with st.form("participant_login_form"):
             st.text_input("Name", key="name_input")
             st.text_input("ID Number", key="id_input")
-            st.form_submit_button("Login", on_click=login)
+            st.form_submit_button("Login as Participant", on_click=login_participant)
     else:
         user_id = st.session_state.current_user
         user_name = st.session_state.participants[user_id]
         st.success(f"Logged in as: {user_name} (ID: {user_id})")
-        st.button("Logout", on_click=logout)
+        st.button("Logout", on_click=logout_participant)
     
     st.divider()
     
-    st.header("Admin Controls")
-    st.checkbox("Buzzer Active", value=st.session_state.buzzer_active, key="buzzer_active")
-    st.button("Reset Buzzer", on_click=reset_buzzer)
+    st.header("Admin Access")
+    
+    if st.session_state.admin_logged_in:
+        st.success("Admin logged in")
+        st.button("Admin Logout", on_click=logout_admin)
+        
+        st.subheader("Admin Controls")
+        st.checkbox("Buzzer Active", value=st.session_state.buzzer_active, key="buzzer_active")
+        st.button("Reset Buzzer", on_click=reset_buzzer)
+    else:
+        if st.session_state.show_admin_login:
+            with st.form("admin_login_form"):
+                st.text_input("Admin Username", key="admin_username")
+                st.text_input("Admin Password", type="password", key="admin_password")
+                st.form_submit_button("Login as Admin", on_click=login_admin)
+            st.button("Cancel", on_click=toggle_admin_login)
+        else:
+            st.button("Admin Login", on_click=toggle_admin_login)
     
     st.divider()
     
     st.header("Instructions")
     st.info("""
-    1. Enter your name and ID number to login
+    1. Enter your name and ID number to login as participant
     2. Press the buzzer when you know the answer
-    3. Admin can reset the buzzer for the next question
+    3. Admin can login to control the buzzer system
     """)
 
 # Main content area
@@ -157,8 +206,8 @@ with col2:
     else:
         st.info("No buzzer presses yet")
 
-# Admin view (only show if no user is logged in or in expanded view)
-if st.session_state.current_user is None:
+# Admin view (only show if admin is logged in)
+if st.session_state.admin_logged_in:
     st.divider()
     st.header("Admin View")
     
@@ -199,6 +248,9 @@ st.markdown("""
     .stSuccess {
         padding: 1rem;
         border-radius: 0.5rem;
+    }
+    div[data-testid="stHorizontalBlock"] {
+        gap: 2rem;
     }
 </style>
 """, unsafe_allow_html=True)
