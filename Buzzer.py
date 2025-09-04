@@ -58,6 +58,8 @@ if 'show_admin_login' not in st.session_state:
     st.session_state.show_admin_login = False
 if 'last_update' not in st.session_state:
     st.session_state.last_update = time.time()
+if 'refresh_counter' not in st.session_state:
+    st.session_state.refresh_counter = 0
 
 # Admin credentials
 ADMIN_USERNAME = "admin"
@@ -69,7 +71,6 @@ def verify_admin(username, password):
     return username == ADMIN_USERNAME and password_hash == ADMIN_PASSWORD_HASH
 
 # Function to get buzzer state from database
-@st.cache_data(ttl=1)
 def get_buzzer_state():
     c = db_conn.cursor()
     c.execute("SELECT value FROM system_state WHERE key = 'buzzer_active'")
@@ -82,11 +83,8 @@ def set_buzzer_state(active):
     c.execute("UPDATE system_state SET value = ? WHERE key = 'buzzer_active'", 
               ('True' if active else 'False',))
     db_conn.commit()
-    # Clear cache to force refresh
-    st.cache_data.clear()
 
 # Function to get all buzzer presses from database
-@st.cache_data(ttl=1)
 def get_buzzer_presses():
     c = db_conn.cursor()
     c.execute("SELECT name, user_id, timestamp, press_time FROM buzzer_presses ORDER BY press_time")
@@ -101,8 +99,6 @@ def add_buzzer_press(user_id, name, timestamp, press_time):
         c.execute("INSERT INTO buzzer_presses (name, user_id, timestamp, press_time) VALUES (?, ?, ?, ?)",
                   (name, user_id, timestamp, press_time))
         db_conn.commit()
-        # Clear cache to force refresh
-        st.cache_data.clear()
         return True
     return False
 
@@ -111,8 +107,6 @@ def reset_buzzer_db():
     c = db_conn.cursor()
     c.execute("DELETE FROM buzzer_presses")
     db_conn.commit()
-    # Clear cache to force refresh
-    st.cache_data.clear()
     # Automatically deactivate buzzer after reset
     set_buzzer_state(False)
 
@@ -127,7 +121,6 @@ def add_participant(user_id, name):
         return False
 
 # Function to get all participants from the database
-@st.cache_data(ttl=5)
 def get_participants():
     c = db_conn.cursor()
     c.execute("SELECT user_id, name FROM participants")
@@ -207,10 +200,11 @@ def toggle_buzzer_state():
 st.title("🔔 Multi-Device Quiz Buzzer System")
 st.markdown("A real-time buzzer system for quiz events with database support for multiple devices")
 
-# Check for updates without refreshing the whole page
+# Check for updates without losing login state
 current_time = time.time()
-if current_time - st.session_state.last_update > 2:  # Update every 2 seconds
+if current_time - st.session_state.last_update > 5:  # Update every 5 seconds
     st.session_state.last_update = current_time
+    st.session_state.refresh_counter += 1
     st.rerun()
 
 # Sidebar for login and admin functions
@@ -218,7 +212,7 @@ with st.sidebar:
     st.header("Participant Login")
     
     if st.session_state.current_user is None:
-        with st.form("participant_login_form"):
+        with st.form("participant_login_form", clear_on_submit=True):
             st.text_input("Name", key="name_input")
             st.text_input("ID Number", key="id_input")
             st.form_submit_button("Login as Participant", on_click=login_participant)
@@ -246,7 +240,7 @@ with st.sidebar:
         st.button("Reset Buzzer", on_click=reset_buzzer)
     else:
         if st.session_state.show_admin_login:
-            with st.form("admin_login_form"):
+            with st.form("admin_login_form", clear_on_submit=True):
                 st.text_input("Admin Username", key="admin_username")
                 st.text_input("Admin Password", type="password", key="admin_password")
                 st.form_submit_button("Login as Admin", on_click=login_admin)
@@ -262,6 +256,7 @@ with st.sidebar:
     2. Press the buzzer when you know the answer
     3. Admin can login to control the buzzer system
     4. Multiple devices are supported through database
+    5. Page refreshes every 5 seconds to show latest buzzers
     """)
 
 # Main content area
@@ -347,6 +342,11 @@ if st.session_state.admin_logged_in:
             st.dataframe(participants_df, use_container_width=True)
         else:
             st.info("No participants yet")
+
+# Hidden element to trigger refresh without affecting layout
+st.markdown(f"""
+<div style="display: none;">Refresh counter: {st.session_state.refresh_counter}</div>
+""", unsafe_allow_html=True)
 
 # Add some custom CSS
 st.markdown("""
