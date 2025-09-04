@@ -60,6 +60,8 @@ if 'last_update' not in st.session_state:
     st.session_state.last_update = time.time()
 if 'refresh_counter' not in st.session_state:
     st.session_state.refresh_counter = 0
+if 'buzzer_active_toggle' not in st.session_state:
+    st.session_state.buzzer_active_toggle = True
 
 # Admin credentials
 ADMIN_USERNAME = "admin"
@@ -83,6 +85,8 @@ def set_buzzer_state(active):
     c.execute("UPDATE system_state SET value = ? WHERE key = 'buzzer_active'", 
               ('True' if active else 'False',))
     db_conn.commit()
+    # Update session state to match database
+    st.session_state.buzzer_active_toggle = active
 
 # Function to get all buzzer presses from database
 def get_buzzer_presses():
@@ -205,6 +209,8 @@ current_time = time.time()
 if current_time - st.session_state.last_update > 5:  # Update every 5 seconds
     st.session_state.last_update = current_time
     st.session_state.refresh_counter += 1
+    # Update session state to match database state
+    st.session_state.buzzer_active_toggle = get_buzzer_state()
     st.rerun()
 
 # Sidebar for login and admin functions
@@ -234,10 +240,17 @@ with st.sidebar:
         st.button("Admin Logout", on_click=logout_admin)
         
         st.subheader("Admin Controls")
-        # Get current state from database for the toggle
-        current_state = get_buzzer_state()
-        st.checkbox("Buzzer Active", value=current_state, key="buzzer_active_toggle", on_change=toggle_buzzer_state)
+        # Update session state to match database state on each refresh
+        st.session_state.buzzer_active_toggle = get_buzzer_state()
+        st.checkbox("Buzzer Active", value=st.session_state.buzzer_active_toggle, key="buzzer_active_toggle", on_change=toggle_buzzer_state)
         st.button("Reset Buzzer", on_click=reset_buzzer)
+        
+        # Display current buzzer state
+        buzzer_state = get_buzzer_state()
+        if buzzer_state:
+            st.success("Buzzer is currently ACTIVE")
+        else:
+            st.error("Buzzer is currently INACTIVE")
     else:
         if st.session_state.show_admin_login:
             with st.form("admin_login_form", clear_on_submit=True):
