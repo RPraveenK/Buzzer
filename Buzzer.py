@@ -16,12 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Enable experimental features for real-time updates
-st.experimental_singleton.clear()
-st.experimental_memo.clear()
-
 # Database setup
-@st.experimental_singleton
 def init_db():
     db_path = Path("buzzer.db")
     conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -74,7 +69,7 @@ def verify_admin(username, password):
     return username == ADMIN_USERNAME and password_hash == ADMIN_PASSWORD_HASH
 
 # Function to get buzzer state from database
-@st.experimental_memo(ttl=1)
+@st.cache_data(ttl=1)
 def get_buzzer_state():
     c = db_conn.cursor()
     c.execute("SELECT value FROM system_state WHERE key = 'buzzer_active'")
@@ -88,10 +83,10 @@ def set_buzzer_state(active):
               ('True' if active else 'False',))
     db_conn.commit()
     # Clear cache to force refresh
-    get_buzzer_state.clear()
+    st.cache_data.clear()
 
 # Function to get all buzzer presses from database
-@st.experimental_memo(ttl=1)
+@st.cache_data(ttl=1)
 def get_buzzer_presses():
     c = db_conn.cursor()
     c.execute("SELECT name, user_id, timestamp, press_time FROM buzzer_presses ORDER BY press_time")
@@ -107,7 +102,7 @@ def add_buzzer_press(user_id, name, timestamp, press_time):
                   (name, user_id, timestamp, press_time))
         db_conn.commit()
         # Clear cache to force refresh
-        get_buzzer_presses.clear()
+        st.cache_data.clear()
         return True
     return False
 
@@ -117,7 +112,7 @@ def reset_buzzer_db():
     c.execute("DELETE FROM buzzer_presses")
     db_conn.commit()
     # Clear cache to force refresh
-    get_buzzer_presses.clear()
+    st.cache_data.clear()
     # Automatically deactivate buzzer after reset
     set_buzzer_state(False)
 
@@ -132,7 +127,7 @@ def add_participant(user_id, name):
         return False
 
 # Function to get all participants from the database
-@st.experimental_memo(ttl=5)
+@st.cache_data(ttl=5)
 def get_participants():
     c = db_conn.cursor()
     c.execute("SELECT user_id, name FROM participants")
@@ -216,7 +211,7 @@ st.markdown("A real-time buzzer system for quiz events with database support for
 current_time = time.time()
 if current_time - st.session_state.last_update > 2:  # Update every 2 seconds
     st.session_state.last_update = current_time
-    st.experimental_rerun()
+    st.rerun()
 
 # Sidebar for login and admin functions
 with st.sidebar:
