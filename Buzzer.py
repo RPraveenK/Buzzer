@@ -296,9 +296,9 @@ with col2:
         st.info("No buzzer presses yet")
 
 # Auto-refresh the page every 2 seconds to get latest buzzer presses
-st.markdown("""
-<meta http-equiv="refresh" content="2">
-""", unsafe_allow_html=True)
+#st.markdown("""
+#<meta http-equiv="refresh" content="2">
+#""", unsafe_allow_html=True)
 
 # Admin view (only show if admin is logged in)
 if st.session_state.admin_logged_in:
