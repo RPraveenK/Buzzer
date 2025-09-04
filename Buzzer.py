@@ -5,6 +5,8 @@ import time
 from datetime import datetime
 import pytz
 import hashlib
+import sqlite3
+import threading
 
 # Set page configuration
 st.set_page_config(
@@ -14,13 +16,37 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Database setup
+def init_db():
+    conn = sqlite3.connect('buzzer.db', check_same_thread=False)
+    c = conn.cursor()
+    
+    # Create tables if they don't exist
+    c.execute('''CREATE TABLE IF NOT EXISTS buzzer_presses
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  user_id TEXT NOT NULL,
+                  timestamp TEXT NOT NULL,
+                  press_time REAL NOT NULL)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS participants
+                 (user_id TEXT PRIMARY KEY,
+                  name TEXT NOT NULL)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS system_state
+                 (key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL)''')
+    
+    # Initialize system state if not exists
+    c.execute("INSERT OR IGNORE INTO system_state VALUES ('buzzer_active', 'True')")
+    
+    conn.commit()
+    return conn
+
+# Initialize database
+db_conn = init_db()
+
 # Initialize session state variables
-if 'buzzer_presses' not in st.session_state:
-    st.session_state.buzzer_presses = pd.DataFrame(columns=['Name', 'ID', 'Timestamp', 'Time'])
-if 'buzzer_active' not in st.session_state:
-    st.session_state.buzzer_active = True
-if 'participants' not in st.session_state:
-    st.session_state.participants = {}
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
 if 'admin_logged_in' not in st.session_state:
@@ -37,35 +63,86 @@ def verify_admin(username, password):
     password_hash = hashlib.sha256(password.encode()).hexdigest()
     return username == ADMIN_USERNAME and password_hash == ADMIN_PASSWORD_HASH
 
+# Function to get buzzer state from database
+def get_buzzer_state():
+    c = db_conn.cursor()
+    c.execute("SELECT value FROM system_state WHERE key = 'buzzer_active'")
+    result = c.fetchone()
+    return result[0] == 'True' if result else True
+
+# Function to set buzzer state in database
+def set_buzzer_state(active):
+    c = db_conn.cursor()
+    c.execute("UPDATE system_state SET value = ? WHERE key = 'buzzer_active'", 
+              ('True' if active else 'False',))
+    db_conn.commit()
+
+# Function to get all buzzer presses from database
+def get_buzzer_presses():
+    c = db_conn.cursor()
+    c.execute("SELECT name, user_id, timestamp, press_time FROM buzzer_presses ORDER BY press_time")
+    return pd.DataFrame(c.fetchall(), columns=['Name', 'ID', 'Timestamp', 'Time'])
+
+# Function to add a buzzer press to the database
+def add_buzzer_press(user_id, name, timestamp, press_time):
+    c = db_conn.cursor()
+    # Check if user has already pressed the buzzer
+    c.execute("SELECT COUNT(*) FROM buzzer_presses WHERE user_id = ?", (user_id,))
+    if c.fetchone()[0] == 0:
+        c.execute("INSERT INTO buzzer_presses (name, user_id, timestamp, press_time) VALUES (?, ?, ?, ?)",
+                  (name, user_id, timestamp, press_time))
+        db_conn.commit()
+        return True
+    return False
+
+# Function to reset the buzzer in the database
+def reset_buzzer_db():
+    c = db_conn.cursor()
+    c.execute("DELETE FROM buzzer_presses")
+    db_conn.commit()
+
+# Function to add a participant to the database
+def add_participant(user_id, name):
+    c = db_conn.cursor()
+    try:
+        c.execute("INSERT INTO participants (user_id, name) VALUES (?, ?)", (user_id, name))
+        db_conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+# Function to get all participants from the database
+def get_participants():
+    c = db_conn.cursor()
+    c.execute("SELECT user_id, name FROM participants")
+    return {row[0]: row[1] for row in c.fetchall()}
+
 # Function to press the buzzer
 def press_buzzer():
-    if st.session_state.current_user and st.session_state.buzzer_active:
+    if st.session_state.current_user and get_buzzer_state():
         user_id = st.session_state.current_user
-        user_name = st.session_state.participants[user_id]
-        current_time = time.time()
-        timestamp = datetime.now(pytz.timezone('UTC')).astimezone(pytz.timezone('US/Eastern')).strftime("%H:%M:%S.%f")[:-3]
-        
-        # Check if user has already pressed the buzzer
-        if user_id not in st.session_state.buzzer_presses['ID'].values:
-            new_press = pd.DataFrame({
-                'Name': [user_name],
-                'ID': [user_id],
-                'Timestamp': [timestamp],
-                'Time': [current_time]
-            })
-            st.session_state.buzzer_presses = pd.concat([st.session_state.buzzer_presses, new_press], ignore_index=True)
-            st.success(f"Buzzer pressed by {user_name} at {timestamp}!")
-        else:
-            st.warning("You have already pressed the buzzer!")
-    elif not st.session_state.buzzer_active:
+        c = db_conn.cursor()
+        c.execute("SELECT name FROM participants WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        if result:
+            user_name = result[0]
+            current_time = time.time()
+            timestamp = datetime.now(pytz.timezone('UTC')).astimezone(pytz.timezone('US/Eastern')).strftime("%H:%M:%S.%f")[:-3]
+            
+            if add_buzzer_press(user_id, user_name, timestamp, current_time):
+                st.success(f"Buzzer pressed by {user_name} at {timestamp}!")
+            else:
+                st.warning("You have already pressed the buzzer!")
+    elif not get_buzzer_state():
         st.error("Buzzer is currently disabled!")
     else:
         st.error("Please login first!")
 
 # Function to reset the buzzer
 def reset_buzzer():
-    st.session_state.buzzer_presses = pd.DataFrame(columns=['Name', 'ID', 'Timestamp', 'Time'])
+    reset_buzzer_db()
     st.session_state.buzzer_active = True
+    set_buzzer_state(True)
 
 # Function to login participant
 def login_participant():
@@ -73,9 +150,11 @@ def login_participant():
     id_num = st.session_state.id_input
     
     if name and id_num:
-        st.session_state.participants[id_num] = name
-        st.session_state.current_user = id_num
-        st.success(f"Welcome, {name}!")
+        if add_participant(id_num, name):
+            st.session_state.current_user = id_num
+            st.success(f"Welcome, {name}!")
+        else:
+            st.error("This ID is already registered. Please use a different ID.")
 
 # Function to logout participant
 def logout_participant():
@@ -101,9 +180,13 @@ def logout_admin():
 def toggle_admin_login():
     st.session_state.show_admin_login = not st.session_state.show_admin_login
 
+# Function to toggle buzzer state
+def toggle_buzzer_state():
+    set_buzzer_state(st.session_state.buzzer_active)
+
 # Application title and description
-st.title("🔔 Quiz Buzzer System")
-st.markdown("A real-time buzzer system for quiz events with secure admin access")
+st.title("🔔 Multi-Device Quiz Buzzer System")
+st.markdown("A real-time buzzer system for quiz events with database support for multiple devices")
 
 # Sidebar for login and admin functions
 with st.sidebar:
@@ -115,9 +198,12 @@ with st.sidebar:
             st.text_input("ID Number", key="id_input")
             st.form_submit_button("Login as Participant", on_click=login_participant)
     else:
-        user_id = st.session_state.current_user
-        user_name = st.session_state.participants[user_id]
-        st.success(f"Logged in as: {user_name} (ID: {user_id})")
+        c = db_conn.cursor()
+        c.execute("SELECT name FROM participants WHERE user_id = ?", (st.session_state.current_user,))
+        result = c.fetchone()
+        if result:
+            user_name = result[0]
+            st.success(f"Logged in as: {user_name} (ID: {st.session_state.current_user})")
         st.button("Logout", on_click=logout_participant)
     
     st.divider()
@@ -129,7 +215,7 @@ with st.sidebar:
         st.button("Admin Logout", on_click=logout_admin)
         
         st.subheader("Admin Controls")
-        st.checkbox("Buzzer Active", value=st.session_state.buzzer_active, key="buzzer_active")
+        st.checkbox("Buzzer Active", value=get_buzzer_state(), key="buzzer_active", on_change=toggle_buzzer_state)
         st.button("Reset Buzzer", on_click=reset_buzzer)
     else:
         if st.session_state.show_admin_login:
@@ -148,6 +234,7 @@ with st.sidebar:
     1. Enter your name and ID number to login as participant
     2. Press the buzzer when you know the answer
     3. Admin can login to control the buzzer system
+    4. Multiple devices are supported through database
     """)
 
 # Main content area
@@ -161,11 +248,11 @@ with col1:
             "🔔 PRESS BUZZER", 
             on_click=press_buzzer, 
             use_container_width=True, 
-            disabled=not st.session_state.buzzer_active,
+            disabled=not get_buzzer_state(),
             help="Press when you know the answer!"
         )
         
-        if not st.session_state.buzzer_active:
+        if not get_buzzer_state():
             st.error("Buzzer is currently disabled by admin")
     else:
         st.info("Please login from the sidebar to access the buzzer")
@@ -175,9 +262,10 @@ with col1:
     st.header("Buzzer Status")
     if st.session_state.current_user:
         user_id = st.session_state.current_user
-        if user_id in st.session_state.buzzer_presses['ID'].values:
-            press_time = st.session_state.buzzer_presses[
-                st.session_state.buzzer_presses['ID'] == user_id
+        buzzer_presses = get_buzzer_presses()
+        if user_id in buzzer_presses['ID'].values:
+            press_time = buzzer_presses[
+                buzzer_presses['ID'] == user_id
             ]['Timestamp'].values[0]
             st.success(f"You pressed the buzzer at {press_time}")
         else:
@@ -188,9 +276,10 @@ with col1:
 with col2:
     st.header("Leaderboard")
     
-    if not st.session_state.buzzer_presses.empty:
+    buzzer_presses = get_buzzer_presses()
+    if not buzzer_presses.empty:
         # Sort by time and add position
-        leaderboard = st.session_state.buzzer_presses.sort_values('Time').copy()
+        leaderboard = buzzer_presses.sort_values('Time').copy()
         leaderboard['Position'] = range(1, len(leaderboard) + 1)
         
         # Display leaderboard
@@ -206,6 +295,11 @@ with col2:
     else:
         st.info("No buzzer presses yet")
 
+# Auto-refresh the page every 2 seconds to get latest buzzer presses
+st.markdown("""
+<meta http-equiv="refresh" content="2">
+""", unsafe_allow_html=True)
+
 # Admin view (only show if admin is logged in)
 if st.session_state.admin_logged_in:
     st.divider()
@@ -215,16 +309,18 @@ if st.session_state.admin_logged_in:
     
     with col3:
         st.subheader("All Buzzer Presses")
-        if not st.session_state.buzzer_presses.empty:
-            st.dataframe(st.session_state.buzzer_presses, use_container_width=True)
+        buzzer_presses = get_buzzer_presses()
+        if not buzzer_presses.empty:
+            st.dataframe(buzzer_presses, use_container_width=True)
         else:
             st.info("No buzzer presses recorded")
     
     with col4:
         st.subheader("Participants")
-        if st.session_state.participants:
+        participants = get_participants()
+        if participants:
             participants_df = pd.DataFrame([
-                {"ID": id, "Name": name} for id, name in st.session_state.participants.items()
+                {"ID": id, "Name": name} for id, name in participants.items()
             ])
             st.dataframe(participants_df, use_container_width=True)
         else:
