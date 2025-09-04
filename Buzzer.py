@@ -6,7 +6,7 @@ from datetime import datetime
 import pytz
 import hashlib
 import sqlite3
-import threading
+from pathlib import Path
 
 # Set page configuration
 st.set_page_config(
@@ -16,9 +16,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Enable experimental features for real-time updates
+st.experimental_singleton.clear()
+st.experimental_memo.clear()
+
 # Database setup
+@st.experimental_singleton
 def init_db():
-    conn = sqlite3.connect('buzzer.db', check_same_thread=False)
+    db_path = Path("buzzer.db")
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     c = conn.cursor()
     
     # Create tables if they don't exist
@@ -38,7 +44,9 @@ def init_db():
                   value TEXT NOT NULL)''')
     
     # Initialize system state if not exists
-    c.execute("INSERT OR IGNORE INTO system_state VALUES ('buzzer_active', 'True')")
+    c.execute("SELECT COUNT(*) FROM system_state WHERE key = 'buzzer_active'")
+    if c.fetchone()[0] == 0:
+        c.execute("INSERT INTO system_state VALUES ('buzzer_active', 'True')")
     
     conn.commit()
     return conn
@@ -53,10 +61,12 @@ if 'admin_logged_in' not in st.session_state:
     st.session_state.admin_logged_in = False
 if 'show_admin_login' not in st.session_state:
     st.session_state.show_admin_login = False
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = time.time()
 
-# Admin credentials (in a real app, use environment variables or a secure database)
+# Admin credentials
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD_HASH = hashlib.sha256("quiz123".encode()).hexdigest()  # password: quiz123
+ADMIN_PASSWORD_HASH = hashlib.sha256("admin123".encode()).hexdigest()  # password: admin123
 
 # Function to verify admin credentials
 def verify_admin(username, password):
@@ -64,6 +74,7 @@ def verify_admin(username, password):
     return username == ADMIN_USERNAME and password_hash == ADMIN_PASSWORD_HASH
 
 # Function to get buzzer state from database
+@st.experimental_memo(ttl=1)
 def get_buzzer_state():
     c = db_conn.cursor()
     c.execute("SELECT value FROM system_state WHERE key = 'buzzer_active'")
@@ -76,8 +87,11 @@ def set_buzzer_state(active):
     c.execute("UPDATE system_state SET value = ? WHERE key = 'buzzer_active'", 
               ('True' if active else 'False',))
     db_conn.commit()
+    # Clear cache to force refresh
+    get_buzzer_state.clear()
 
 # Function to get all buzzer presses from database
+@st.experimental_memo(ttl=1)
 def get_buzzer_presses():
     c = db_conn.cursor()
     c.execute("SELECT name, user_id, timestamp, press_time FROM buzzer_presses ORDER BY press_time")
@@ -92,6 +106,8 @@ def add_buzzer_press(user_id, name, timestamp, press_time):
         c.execute("INSERT INTO buzzer_presses (name, user_id, timestamp, press_time) VALUES (?, ?, ?, ?)",
                   (name, user_id, timestamp, press_time))
         db_conn.commit()
+        # Clear cache to force refresh
+        get_buzzer_presses.clear()
         return True
     return False
 
@@ -100,6 +116,10 @@ def reset_buzzer_db():
     c = db_conn.cursor()
     c.execute("DELETE FROM buzzer_presses")
     db_conn.commit()
+    # Clear cache to force refresh
+    get_buzzer_presses.clear()
+    # Automatically deactivate buzzer after reset
+    set_buzzer_state(False)
 
 # Function to add a participant to the database
 def add_participant(user_id, name):
@@ -112,6 +132,7 @@ def add_participant(user_id, name):
         return False
 
 # Function to get all participants from the database
+@st.experimental_memo(ttl=5)
 def get_participants():
     c = db_conn.cursor()
     c.execute("SELECT user_id, name FROM participants")
@@ -141,8 +162,7 @@ def press_buzzer():
 # Function to reset the buzzer
 def reset_buzzer():
     reset_buzzer_db()
-    st.session_state.buzzer_active = True
-    set_buzzer_state(True)
+    st.success("Buzzer reset and deactivated!")
 
 # Function to login participant
 def login_participant():
@@ -182,11 +202,21 @@ def toggle_admin_login():
 
 # Function to toggle buzzer state
 def toggle_buzzer_state():
-    set_buzzer_state(st.session_state.buzzer_active)
+    set_buzzer_state(st.session_state.buzzer_active_toggle)
+    if st.session_state.buzzer_active_toggle:
+        st.success("Buzzer activated!")
+    else:
+        st.success("Buzzer deactivated!")
 
 # Application title and description
 st.title("🔔 Multi-Device Quiz Buzzer System")
 st.markdown("A real-time buzzer system for quiz events with database support for multiple devices")
+
+# Check for updates without refreshing the whole page
+current_time = time.time()
+if current_time - st.session_state.last_update > 2:  # Update every 2 seconds
+    st.session_state.last_update = current_time
+    st.experimental_rerun()
 
 # Sidebar for login and admin functions
 with st.sidebar:
@@ -215,7 +245,9 @@ with st.sidebar:
         st.button("Admin Logout", on_click=logout_admin)
         
         st.subheader("Admin Controls")
-        st.checkbox("Buzzer Active", value=get_buzzer_state(), key="buzzer_active", on_change=toggle_buzzer_state)
+        # Get current state from database for the toggle
+        current_state = get_buzzer_state()
+        st.checkbox("Buzzer Active", value=current_state, key="buzzer_active_toggle", on_change=toggle_buzzer_state)
         st.button("Reset Buzzer", on_click=reset_buzzer)
     else:
         if st.session_state.show_admin_login:
@@ -282,23 +314,18 @@ with col2:
         leaderboard = buzzer_presses.sort_values('Time').copy()
         leaderboard['Position'] = range(1, len(leaderboard) + 1)
         
-        # Display leaderboard
+        # Display leaderboard with ID numbers
         st.dataframe(
-            leaderboard[['Position', 'Name', 'Timestamp']],
+            leaderboard[['Position', 'Name', 'ID', 'Timestamp']],
             hide_index=True,
             use_container_width=True
         )
         
         # Show first place
         first_place = leaderboard.iloc[0]
-        st.success(f"🏆 First: {first_place['Name']} at {first_place['Timestamp']}")
+        st.success(f"🏆 First: {first_place['Name']} (ID: {first_place['ID']}) at {first_place['Timestamp']}")
     else:
         st.info("No buzzer presses yet")
-
-# Auto-refresh the page every 2 seconds to get latest buzzer presses
-#st.markdown("""
-#<meta http-equiv="refresh" content="2">
-#""", unsafe_allow_html=True)
 
 # Admin view (only show if admin is logged in)
 if st.session_state.admin_logged_in:
@@ -311,7 +338,7 @@ if st.session_state.admin_logged_in:
         st.subheader("All Buzzer Presses")
         buzzer_presses = get_buzzer_presses()
         if not buzzer_presses.empty:
-            st.dataframe(buzzer_presses, use_container_width=True)
+            st.dataframe(buzzer_presses[['Name', 'ID', 'Timestamp']], use_container_width=True)
         else:
             st.info("No buzzer presses recorded")
     
